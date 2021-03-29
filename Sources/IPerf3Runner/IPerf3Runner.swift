@@ -40,6 +40,7 @@ public class IPerf3Runner {
     iperf_set_test_server_port(test, Int32(configuration.port))
     iperf_set_test_duration(test, Int32(configuration.duration))
     iperf_set_test_template(test, streamFilePathTemplate.pointer)
+    iperf_set_test_omit(test, Int32(configuration.omit))
     test.pointee.settings.pointee.connect_timeout = 3000
   }
 
@@ -77,8 +78,12 @@ private extension IPerf3Runner {
     return lastResult
   }
   
-  func getBytes(stream: iperf_stream?) -> Double {
-    return Double(getLastResult(stream: stream)?.bytes_transferred ?? 0)
+  func getLastIntervalBytes(stream: iperf_stream?) -> Double {
+    Double(getLastResult(stream: stream)?.bytes_transferred ?? 0)
+  }
+
+  func getTotalBytes(stream: iperf_stream?) -> Double {
+    Double(stream?.result.pointee.bytes_received ?? 0)
   }
 
   func allStreams(stream: iperf_stream?) -> [iperf_stream] {
@@ -93,21 +98,24 @@ private extension IPerf3Runner {
     return streams
   }
 
-  func handleCompletion(test: iperf_test) {
-    let result = test.streams.slh_first.pointee.result.pointee
-
+  func handleCompletion(stream: iperf_stream) {
+    let result = stream.result.pointee
+    let bytes = allStreams(stream: stream)
+      .reduce(into: 0) { (bytes, current) in bytes += getTotalBytes(stream: current) }
     let totalDuration = Double(result.end_time.secs - result.start_time.secs)
-    let bandwidth = Double(result.bytes_sent) / totalDuration * 8 / 1_000_000
 
+    let bandwidth = bytes / totalDuration * 8 / 1_000_000
     callback?(.completed(bandwidth))
   }
 
   func handleStatusCallback(test: iperf_test) {
-    guard test.done != 1 else { return handleCompletion(test: test) }
-    let stream = test.streams.slh_first.pointee
+    guard let stream = test.streams.slh_first?.pointee else { return }
+    if test.done == 1 {
+      return handleCompletion(stream: stream)
+    }
 
     let bytes = allStreams(stream: stream)
-      .reduce(into: 0) { (bytes, current) in bytes += getBytes(stream: current) }
+      .reduce(into: 0) { (bytes, current) in bytes += getLastIntervalBytes(stream: current) }
 
     if let interval_results = getLastResult(stream: stream) {
       let bandwith = (bytes / Double(interval_results.interval_duration)) * 8 / 1_000_000
